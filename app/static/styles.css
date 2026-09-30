@@ -126,6 +126,18 @@ button.danger:hover { background: #991b1b; }
 }
 .withdrawn-card { background: #fafafa; }
 
+/* 认领信息条 */
+.claim-box {
+  margin-top: 8px;
+  font-size: 13px;
+  background: #ede9fe;
+  color: #5b21b6;
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+.claim-box.mine { background: #dbeafe; color: #1e40af; }
+.claim-countdown { font-variant-numeric: tabular-nums; }
+
 /* 展签条目 */
 .item { border-top: 1px solid var(--line); padding: 14px 0; }
 .item:first-child { border-top: none; padding-top: 4px; }

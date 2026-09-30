@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS snapshots (
     payload TEXT NOT NULL,           -- 不可变 JSON
     UNIQUE (language_id, version)
 );
+
+CREATE TABLE IF NOT EXISTS claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    language_id INTEGER NOT NULL REFERENCES languages(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),   -- 认领人
+    source_rev INTEGER NOT NULL,      -- 认领时所凭原文修订号
+    trans_rev INTEGER NOT NULL,       -- 认领时所凭译文修订号
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,         -- 到期时间（认领 30 分钟）
+    released_at TEXT,                 -- 提前释放时间；NULL 表示当前行有效（另须未到期）
+    UNIQUE (label_id, language_id)    -- 同一译文同一时刻仅一行（释放/到期后整行覆盖）
+);
 """
 
 

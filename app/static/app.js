@@ -48,6 +48,22 @@ async function api(path, opts = {}) {
 const isWorker = () => state.me.role === 'translator' || state.me.role === 'reviewer';
 const isLibrarian = () => state.me.role === 'librarian';
 
+// 认领有效期（秒），与后端 CLAIM_TTL 一致，仅用于倒计时展示
+const CLAIM_TTL_SECONDS = 30 * 60;
+
+// 后端时间为 UTC 的 "YYYY-MM-DD HH:MM:SS"，转为剩余秒数
+function claimRemain(expiresAt) {
+  if (!expiresAt) return 0;
+  const t = Date.parse(expiresAt.replace(' ', 'T') + 'Z');
+  return Math.max(0, Math.floor((t - Date.now()) / 1000));
+}
+
+function fmtRemain(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 // ---------------------------- 初始化 ----------------------------
 
 async function init() {
@@ -292,6 +308,7 @@ function renderBoard() {
 function renderItem(item) {
   const l = item.label;
   const t = item.translation;
+  const claim = item.claim;
   const tagMap = {
     missing: ['待译', 'missing'],
     pending: ['待审', 'pending'],
@@ -315,13 +332,24 @@ function renderItem(item) {
       </div>`;
   }
 
+  // 认领信息条（认领人、到期倒计时）；有效认领时 claim 非 null
+  let claimHtml = '';
+  if (claim) {
+    const remain = claimRemain(claim.expires_at);
+    const who = claim.mine
+      ? '🔒 你已认领该译文'
+      : `🔒 该译文已由 <b>${esc(claim.claimer_name)}</b> 认领`;
+    const tail = claim.mine
+      ? `到期前仅你可确认 · 剩余 <b class="claim-countdown" data-expires="${esc(claim.expires_at)}">${fmtRemain(remain)}</b>`
+      : `剩余 <b class="claim-countdown" data-expires="${esc(claim.expires_at)}">${fmtRemain(remain)}</b> 后他人可接手`;
+    claimHtml = `<div class="claim-box ${claim.mine ? 'mine' : ''}">${who} · ${tail}</div>`;
+  }
+
   // 操作区
   let actions = '';
   if (isWorker()) {
-    const canEdit = true; // 译者/校对均可提交译文
-    const own = t && t.translator_id === state.me.id;
     actions += `
-      <label>${t ? '修订译文（提交后译文修订号 +1、清除确认）' : '提交译文'}</label>
+      <label>${t ? '修订译文（提交后译文修订号 +1、清除确认与认领）' : '提交译文'}</label>
       <textarea class="t-edit" rows="2">${t ? esc(t.text) : ''}</textarea>
       <div class="row-actions">
         <button class="small submit-trans">${t ? '提交修订' : '提交译文'}</button>`;
@@ -331,10 +359,19 @@ function renderItem(item) {
         actions += `<span class="muted">已确认，无需操作。</span>`;
       } else if (item.status === 'stale') {
         actions += `<span class="reason">译文基于旧版原文，须先提交修订后再确认。</span>`;
-      } else if (own) {
-        actions += `<span class="muted">此译文由你提交，依规则须由另一名账号校对确认。</span>`;
+      } else if (claim && claim.mine) {
+        // 本人持有有效认领：仅本人可确认，可提前释放
+        actions += `<button class="small ghost confirm-trans">确认译文（你已认领）</button>`;
+        actions += `<button class="small ghost release-claim">提前释放认领</button>`;
+      } else if (claim) {
+        // 他人持有有效认领：等待其完成/释放/到期，到期后刷新可接手
+        actions += `<span class="muted">认领有效期间不能确认，可等待到期后接手。</span>`;
+      } else if (t.translator_id === state.me.id) {
+        actions += `<span class="muted">此译文由你提交，依规则须由另一名账号认领并校对确认。</span>`;
       } else {
-        actions += `<button class="small ghost confirm-trans">确认译文</button>`;
+        // 无人认领：先认领（认领后仅认领人可确认）
+        actions += `<button class="small ghost claim-trans">认领 30 分钟</button>`;
+        actions += `<span class="muted">也可直接确认：无有效认领时沿用原确认流程。</span>`;
       }
     }
     actions += '</div>';
@@ -352,6 +389,7 @@ function renderItem(item) {
     </div>
     <div class="src">${esc(l.source_text)}</div>
     ${transHtml}
+    ${claimHtml}
     <div class="reason ${item.status === 'ready' ? 'ok' : ''}">${esc(item.reason)}</div>
     ${actions}
   </div>`;
@@ -429,7 +467,59 @@ function bindItemEvents() {
         btn.disabled = false;
       }
     }));
+
+  document.querySelectorAll('.claim-trans').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const box = btn.closest('.item');
+      btn.disabled = true;
+      try {
+        await api(`/api/board/${state.currentLangId}/labels/${box.dataset.label}/claim`, {
+          method: 'POST',
+          body: JSON.stringify({
+            source_rev: Number(box.dataset.sourceRev),
+            trans_rev: Number(box.dataset.transRev),
+          }),
+        });
+        toast('已认领：30 分钟内仅你可确认，可提前释放');
+        await loadBoard();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+        // 可能已被他人抢先认领，刷新看板显示最新认领人
+        await loadBoard();
+      }
+    }));
+
+  document.querySelectorAll('.release-claim').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const box = btn.closest('.item');
+      btn.disabled = true;
+      try {
+        await api(`/api/board/${state.currentLangId}/labels/${box.dataset.label}/claim/release`, {
+          method: 'POST',
+        });
+        toast('已释放认领，其他账号现在可以接手');
+        await loadBoard();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    }));
 }
+
+// ---------------------------- 认领倒计时 ----------------------------
+
+// 每秒刷新倒计时；任一认领到期则重新拉取看板（到期后他人可接手）
+setInterval(() => {
+  if (!state.board) return;
+  let expired = false;
+  document.querySelectorAll('.claim-countdown').forEach((el) => {
+    const remain = claimRemain(el.dataset.expires);
+    if (remain <= 0) expired = true;
+    el.textContent = fmtRemain(remain);
+  });
+  if (expired) loadBoard();
+}, 1000);
 
 // ---------------------------- 发布快照 ----------------------------
 
