@@ -79,6 +79,20 @@ CREATE TABLE IF NOT EXISTS translations (
     UNIQUE (label_id, language_id)
 );
 
+CREATE TABLE IF NOT EXISTS review_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    language_id INTEGER NOT NULL REFERENCES languages(id) ON DELETE CASCADE,
+    source_rev INTEGER NOT NULL,        -- 认领时锁定的原文修订号（读取时所见）
+    trans_rev INTEGER NOT NULL,         -- 认领时锁定的译文修订号（读取时所见）
+    claimer_id INTEGER NOT NULL REFERENCES users(id),
+    claimed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,           -- 认领到期时间（默认认领后 30 分钟）
+    released_at TEXT,                   -- 提前释放/失效时间；NULL 表示尚未结束（可能已过期）
+    end_reason TEXT,                    -- released 主动释放 / invalidated 修订·撤复展失效 / confirmed 确认结束
+    UNIQUE (label_id, language_id)      -- 同一译文同一时刻仅一行认领记录
+);
+
 CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     language_id INTEGER NOT NULL REFERENCES languages(id),

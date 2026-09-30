@@ -289,6 +289,29 @@ function renderBoard() {
   bindItemEvents();
 }
 
+function renderClaim(item) {
+  // 仅待审译文可能带有效认领；认领人、到期时间由看板接口给出
+  if (item.status !== 'pending' || !item.claim) return '';
+  const c = item.claim;
+  const exp = esc(c.expires_at);
+  if (isWorker() && c.mine) {
+    return `
+      <div class="claim-box mine">
+        🔒 你已认领该译文，剩余 <b class="claim-countdown" data-expires="${exp}">--:--</b>，
+        请在此期间完成校对确认；其他账号此时不能确认。
+        <div class="row-actions">
+          <button class="small ghost release-claim">提前释放认领</button>
+        </div>
+      </div>`;
+  }
+  const who = esc(c.claimer_name || ('#' + c.claimer_id));
+  return `
+  <div class="claim-box">
+    🔒 已由 <b>${who}</b> 认领，到期 ${exp}（UTC），剩余
+    <b class="claim-countdown" data-expires="${exp}">--:--</b>；到期后可接手。
+  </div>`;
+}
+
 function renderItem(item) {
   const l = item.label;
   const t = item.translation;
@@ -332,9 +355,16 @@ function renderItem(item) {
       } else if (item.status === 'stale') {
         actions += `<span class="reason">译文基于旧版原文，须先提交修订后再确认。</span>`;
       } else if (own) {
-        actions += `<span class="muted">此译文由你提交，依规则须由另一名账号校对确认。</span>`;
+        actions += `<span class="muted">此译文由你提交，依规则须由另一名账号校对确认，且你不能认领自己的译文。</span>`;
+      } else if (item.claim && !item.claim.mine) {
+        actions += `<span class="muted">认领有效期内仅认领人可确认；可等待到期接手，或请认领人释放。</span>`;
       } else {
+        // 待审且非本人提交：无人认领可直接确认（沿用原流程）或先认领；
+        // 本人持有认领时确认按钮照常可用
         actions += `<button class="small ghost confirm-trans">确认译文</button>`;
+        if (!item.claim) {
+          actions += `<button class="small claim-btn">认领 30 分钟</button>`;
+        }
       }
     }
     actions += '</div>';
@@ -353,6 +383,7 @@ function renderItem(item) {
     <div class="src">${esc(l.source_text)}</div>
     ${transHtml}
     <div class="reason ${item.status === 'ready' ? 'ok' : ''}">${esc(item.reason)}</div>
+    ${renderClaim(item)}
     ${actions}
   </div>`;
 }
@@ -429,7 +460,74 @@ function bindItemEvents() {
         btn.disabled = false;
       }
     }));
+
+  document.querySelectorAll('.claim-btn').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const box = btn.closest('.item');
+      btn.disabled = true;
+      try {
+        await api(`/api/board/${state.currentLangId}/labels/${box.dataset.label}/claim`, {
+          method: 'POST',
+          body: JSON.stringify({
+            source_rev: Number(box.dataset.sourceRev),
+            trans_rev: Number(box.dataset.transRev),
+          }),
+        });
+        toast('已认领 30 分钟：期间仅你可以确认，可提前释放');
+        await loadBoard();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    }));
+
+  document.querySelectorAll('.release-claim').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const box = btn.closest('.item');
+      btn.disabled = true;
+      try {
+        await api(`/api/board/${state.currentLangId}/labels/${box.dataset.label}/claim/release`, {
+          method: 'POST',
+        });
+        toast('已释放认领，其他账号现在可以认领或确认');
+        await loadBoard();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    }));
 }
+
+// ---------------------------- 认领倒计时 ----------------------------
+
+// 服务器时间为 UTC（格式 YYYY-MM-DD HH:MM:SS）；expires 字符串补 Z 后按 UTC 解析
+function claimRemaining(expires) {
+  const ms = Date.parse(expires.replace(' ', 'T') + 'Z') - Date.now();
+  return Math.max(0, Math.floor(ms / 1000));
+}
+
+function fmtCountdown(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function tickClaimCountdowns() {
+  let expired = false;
+  document.querySelectorAll('.claim-countdown').forEach((el) => {
+    const sec = claimRemaining(el.dataset.expires);
+    el.textContent = fmtCountdown(sec);
+    if (sec <= 0) expired = true;
+  });
+  // 有认领刚到期：刷新一次看板，使“接手/确认”按钮立即可用（仅安排一次）
+  if (expired && tickClaimCountdowns._board) {
+    tickClaimCountdowns._board = false;
+    loadBoard().finally(() => { tickClaimCountdowns._board = true; });
+  }
+}
+
+tickClaimCountdowns._board = true;
+setInterval(tickClaimCountdowns, 1000);
 
 // ---------------------------- 发布快照 ----------------------------
 
